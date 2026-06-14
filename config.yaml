@@ -1,0 +1,16 @@
+# Default assumptions for the assignment videos.
+# DJI gimbal pitch is commonly negative: 0 = horizon, -90 = straight down.
+video_fps: 30
+frame_step: 30          # one frame per second by default
+image_width: 1920
+image_height: 1080
+horizontal_fov_deg: 73.0 # approximate; adjust per drone/camera if known
+vertical_fov_deg: 45.0   # approximate; adjust per drone/camera if known
+pitch_convention: dji    # dji means negative pitch looks down
+assumed_ground_alt_m: 0.0
+fallback_pitch_deg: -60.0
+fallback_altitude_m: 119.0
+match_method: ORB
+orb_features: 3000
+ratio_test: 0.75
+ransac_reproj_threshold: 5.0
