@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+
+data/raw/*
+!data/raw/pairs_template.csv
+
+outputs/
+
+visual_debug.py
+docs/figures/*.csv
