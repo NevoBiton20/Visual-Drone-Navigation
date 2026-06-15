@@ -9,3 +9,5 @@ outputs/
 data/processed/
 visual_debug.py
 docs/figures/*.csv
+
+!data/raw/pairs_train_leave_v14_out.csv
