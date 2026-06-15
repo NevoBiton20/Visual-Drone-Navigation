@@ -1,4 +1,4 @@
-# Visual Navigation for Drones — Ex1 Project Package
+# Visual Navigation for Drones / Ex1 Project Package
 
 This package contains a complete starter implementation for the university assignment:
 
