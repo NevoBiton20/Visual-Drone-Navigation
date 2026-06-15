@@ -1,0 +1,54 @@
+Visual localization evaluation numbers
+==================================================
+
+Total query frames: 54
+Frames with valid error: 53
+
+Error statistics [meters]:
+count     53.000000
+mean      50.270357
+std       26.502855
+min        5.727522
+25%       35.250506
+50%       48.279779
+75%       59.268505
+max      150.326582
+Name: center_error_m, dtype: float64
+
+Matched source counts:
+best_source_name
+v13    44
+v11    10
+Name: count, dtype: int64
+
+Error by matched source [meters]:
+                  count       mean        std        min        25%        50%        75%         max
+best_source_name                                                                                     
+v11                10.0  25.156041  15.531862   5.727522  13.420705  23.329159  31.847721   56.273355
+v13                43.0  56.110896  25.156473  21.856594  41.794876  50.614383  63.956360  150.326582
+
+Best 10 matches:
+    query_frame_index best_source_name  match_score  good_matches  homography_inliers  center_error_m
+23               3540              v11        156.0            26                  13        5.727522
+24               3600              v11        143.0            23                  12       10.033190
+28               3900              v11        150.0            30                  12       11.872516
+22               3480              v11        166.0            26                  14       18.065271
+1                  60              v13        251.0            31                  22       21.856594
+21               3420              v11        132.0            22                  11       22.436277
+50               7320              v13        156.0            26                  13       23.656497
+25               3660              v11        143.0            23                  12       24.222041
+2                 120              v13       1026.0           106                  92       26.416633
+51               7380              v13        305.0            45                  26       27.420896
+
+Worst 10 matches:
+    query_frame_index best_source_name  match_score  good_matches  homography_inliers  center_error_m
+20               1560              v13        138.0            18                  12      150.326582
+45               6720              v13        256.0            26                  23      126.312918
+48               6960              v13        121.0            21                  10       92.532429
+49               7020              v13        215.0            35                  18       86.711355
+18               1080              v13        196.0            26                  17       82.862993
+47               6900              v13        132.0            22                  11       81.894233
+44               6660              v13        992.0           112                  88       80.499081
+19               1140              v13        203.0            23                  18       80.187445
+40               6420              v13        241.0            31                  21       68.001774
+32               5940              v13        315.0            35                  28       66.872548
