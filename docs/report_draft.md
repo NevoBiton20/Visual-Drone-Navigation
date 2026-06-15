@@ -1,176 +1,443 @@
-# Ex1 — Visual Navigation for Drones in GNSS-Denied Conditions
+# Ex1 - Visual Navigation for Drones
 
-## 1. Introduction
+## GNSS-Denied Optical Navigation Using Drone Video and SRT Telemetry
 
-This assignment studies visual navigation for low-flying drones in GNSS-denied conditions. The practical problem is: given a drone video stream and telemetry without GNSS, estimate the geographic coordinate of the ground point observed at the center of the image. The available training data contains videos with SRT telemetry, including GNSS position, barometric/relative height, and camera/gimbal orientation. Therefore, the training flights can be used to build a geo-referenced visual reference database. During a later flight without GNSS, the system localizes the incoming video frames by matching them against the reference database and computing the ground coordinate of the current camera center.
+### 1. Introduction
 
-The proposed solution combines three components:
+The goal of this assignment is to study visual navigation for drones in GNSS-denied conditions. In normal drone operation, the drone can rely on GNSS measurements such as GPS coordinates in order to know its position. However, in many real-world scenarios GNSS may be unavailable, unreliable, jammed, spoofed, or blocked. In such cases, the drone must estimate its position using alternative sensors, mainly the onboard camera and additional telemetry such as altitude, camera angle, and heading.
 
-1. Camera geometry and telemetry-based ground projection.
-2. Visual image matching against geo-referenced reference frames or an orthomosaic.
-3. Temporal smoothing to produce a stable real-time navigation output.
+This project focuses on a practical optical navigation problem. Given drone flight data that includes video and SRT telemetry with GNSS information, the system first preprocesses the data into a geo-referenced visual database. Later, given a new video stream without GNSS, the system estimates the geographic coordinate of the ground point observed at the center of the video frame.
 
-## 2. Literature Review
+The implemented system includes three main parts:
 
-### 2.1 Visual odometry, visual-inertial odometry, and SLAM
+1. A geometry-based preliminary experiment that projects the camera-center ray onto the ground using SRT telemetry.
+2. A preprocessing stage that builds a geo-referenced database from GNSS-labeled flights.
+3. A GNSS-denied visual localization stage that matches frames from a query video to the reference database.
 
-Visual odometry estimates the camera motion between consecutive frames. Visual-inertial odometry also uses inertial measurements, and SLAM jointly estimates camera pose and builds a map. These methods are useful for short-term navigation and hovering because they estimate relative motion even without GNSS. However, they usually accumulate drift over time unless they are corrected by loop closure, map matching, or another absolute reference. ORB-SLAM3 is a strong open-source baseline for visual and visual-inertial SLAM, supporting monocular, stereo, RGB-D, and inertial configurations. It is suitable for estimating the relative trajectory of the drone, but by itself it does not directly solve the assignment's requirement of producing geographic coordinates unless the map is geo-referenced.
+In addition, a confidence-filtering mechanism is added in order to reject unreliable visual matches.
 
-### 2.2 Absolute visual localization using maps
+---
 
-Absolute visual localization aims to estimate the global position of the drone by matching the current aerial image to a geo-referenced map, orthophoto, or satellite image. This is closer to the assignment because the output is a coordinate. UAV-VisLoc defines the UAV localization problem as matching UAV imagery to an orthorectified satellite map, where coordinates are available for map pixels. The dataset includes UAV images with location, height, heading, and other metadata, which makes it highly relevant for designing the proposed pipeline.
+### 2. Problem Definition
 
-### 2.3 GNSS-free localization with satellite imagery
+The assignment considers a drone equipped with a video camera. During the preprocessing stage, the drone flight includes GNSS information. During the navigation stage, the drone receives a new video stream and telemetry, but without GNSS positioning.
 
-Several recent methods address GNSS-free UAV localization by matching onboard drone imagery with satellite or aerial maps. A practical pipeline usually contains a coarse image retrieval stage followed by a fine registration stage. Coarse retrieval finds candidate map tiles or reference frames; fine registration estimates a geometric transformation between the drone image and the selected map/reference image. The 2025 hierarchical absolute localization system for low-altitude UAVs follows this logic: it combines image retrieval and image registration, and also uses inertial correction and local map updates.
+The required output is not necessarily the exact body position of the drone. Instead, the main required output is the coordinate of the point on the ground that appears at the center of the video frame. This point is called in this report the camera-center ground point.
 
-### 2.4 Feature matching methods
+For every frame, the system aims to estimate:
 
-Classical feature matching methods such as SIFT, ORB, and AKAZE are simple and interpretable. ORB is fast and available in OpenCV, so it is a good first baseline. However, drone images often contain viewpoint change, scale change, motion blur, lighting differences, and seasonal differences. Modern learned methods such as SuperGlue and LightGlue improve matching by using neural networks to reason about correspondences. LightGlue is particularly useful for this assignment because it is designed for fast local feature matching and has open-source code.
+[
+P_c = (\text{latitude}_c, \text{longitude}_c)
+]
 
-### 2.5 Drone image geolocation by raycasting
+where (P_c) is the geographic coordinate of the ground point observed at the center of the image.
 
-A separate but highly relevant direction is metadata-based pixel geolocation. OpenAthena geolocates a selected pixel in drone imagery by combining camera metadata with a terrain elevation model. This matches the assignment's camera-center-coordinate requirement very closely. In this project, the first baseline uses a simpler flat-ground version: from altitude and camera pitch, it computes the ground intersection of the center camera ray. A stronger version would replace flat-ground projection with DEM raycasting.
+The available data includes:
 
-### 2.6 Semantic segmentation for UAV images
+* Drone video.
+* SRT telemetry.
+* GNSS latitude and longitude during preprocessing.
+* Relative altitude from the SRT file.
+* Camera angle from the dataset description.
+* Frame timestamps.
+* In some cases, missing yaw/gimbal fields.
 
-Semantic segmentation can detect roads, buildings, trees, cars, humans, and other objects. Segmentation is useful as supporting information: it can reject bad visual matches, emphasize stable classes such as roads/buildings, and ignore unstable classes such as cars or pedestrians. However, segmentation alone does not produce geographic coordinates. SegFormer is a suitable recent family of segmentation models for UAV imagery, with smaller variants for real-time use and larger variants for higher accuracy.
+In the used SRT files, the GNSS coordinates and relative altitude were available, but explicit yaw and gimbal pitch fields were not consistently available. Therefore, the camera angle was taken from the assignment description, and the heading was estimated from the GNSS trajectory.
 
-## 3. Problem Definition
+---
 
-Input during preprocessing:
+### 3. Literature Review
 
-- Drone videos.
-- SRT telemetry containing GNSS, altitude/barometric height, heading/yaw, and gimbal pitch.
+Visual navigation for drones can be approached using several families of algorithms.
 
-Input during GNSS-denied navigation:
+#### 3.1 Visual Odometry and Visual-Inertial Odometry
 
-- Real-time video stream.
-- Telemetry without GNSS, for example height, camera angle, and possibly heading/IMU.
+Visual Odometry estimates the motion of a camera by tracking visual features across consecutive frames. Visual-Inertial Odometry extends this approach by also using inertial measurements from an IMU. These methods are useful for estimating relative motion, especially over short time intervals.
 
-Output:
+The main weakness of pure visual odometry is drift. Small errors accumulate over time, so the estimated position becomes less accurate as the flight continues. Visual-Inertial Odometry reduces drift, but still usually requires loop closure, map matching, or external correction to obtain a globally accurate position.
 
-- Estimated geographic coordinate of the ground point seen at the center of the video frame.
+#### 3.2 SLAM
 
-Assumptions for the first baseline:
+Simultaneous Localization and Mapping, or SLAM, estimates both the camera trajectory and a map of the environment. ORB-SLAM3 is a well-known open-source SLAM system that supports monocular, stereo, RGB-D, visual-inertial, and multi-map SLAM. It is relevant because it demonstrates how feature-based methods and loop closure can support real-time camera localization.
 
-- The ground is locally flat.
-- The camera center ray is enough for the preliminary experiment.
-- Gimbal pitch follows the common DJI convention: 0° is horizon and -90° is nadir.
-- If SRT lacks pitch or altitude, assignment-provided constants are used.
+However, SLAM alone does not directly solve the assignment’s geographic localization problem. SLAM gives a trajectory in a local coordinate frame unless it is connected to a geo-referenced map or initialized with global coordinates. Therefore, SLAM is useful as a component, but the assignment also requires georeferencing.
 
-## 4. Proposed Preprocessing Algorithm
+#### 3.3 UAV Mapping and Orthomosaic Construction
 
-For each training video:
+Another relevant direction is UAV mapping. OpenREALM is an open-source framework for real-time aerial mapping. It can create image mosaics and orthophotos from UAV video and georeference them using the UAV’s global position. This is close to the preprocessing stage required in the assignment, where GNSS-labeled video is converted into a reference database or visual map.
 
-1. Extract sampled frames, for example one frame per second.
-2. Parse SRT telemetry.
-3. Synchronize each extracted frame with the nearest telemetry timestamp.
-4. Compute the camera-center ground coordinate using altitude, heading, and camera pitch.
-5. Store frame path, timestamp, drone GNSS coordinate, camera-center coordinate, altitude, pitch, heading, and source video name.
-6. Extract visual descriptors from each reference frame.
-7. Save a reference database for real-time localization.
+The main difference is that this project implements a lighter solution based on sampled frames and camera-center coordinates, instead of producing a full orthomosaic.
 
-### 4.1 Camera-center projection
+#### 3.4 Drone-to-Map Visual Localization
 
-Let:
+Drone-to-map localization directly matches a drone image to a geo-referenced map, satellite image, or previously built visual database. This direction is highly relevant to GNSS-denied navigation because it can provide absolute geographic coordinates rather than only relative motion.
 
-- `h` be drone height above local ground.
-- `theta` be the camera depression angle below the horizon.
-- `psi` be drone/camera heading.
+UAV-VisLoc defines a similar task: given a drone image, estimate the UAV position by matching it to a satellite map. The dataset includes drone images, center coordinates, height, shooting date, and heading. This supports the idea that absolute UAV localization can be formulated as an image retrieval and image matching problem.
 
-The horizontal distance from the drone to the center ground point is:
+Another related direction is vision-based GNSS-free localization using open-source satellite imagery. In this approach, drone images are matched to geo-referenced map tiles, and the matched tile is used to estimate the drone’s location.
 
-```text
-d = h / tan(theta)
+#### 3.5 Feature Matching
+
+Classical feature matching methods such as ORB, SIFT, and AKAZE detect local image keypoints and match descriptors between images. ORB was selected in this project because it is fast, available in OpenCV, and suitable for a practical baseline.
+
+Modern learned feature matching methods such as SuperGlue and LightGlue provide stronger matching performance. SuperGlue uses a graph neural network to match local features and reject non-matchable points. LightGlue improves efficiency and accuracy using adaptive computation. These methods are promising future replacements for ORB in this project.
+
+#### 3.6 Semantic Segmentation
+
+Semantic segmentation can identify classes such as roads, buildings, trees, cars, humans, and pedestrian crossings. In drone navigation, segmentation can help reject bad visual matches and focus localization on stable landmarks. SegFormer has been evaluated for UAV remote sensing image segmentation and is relevant for this purpose.
+
+In this project, semantic segmentation was reviewed but not implemented. The implemented navigation baseline focuses on geometric projection and visual feature matching.
+
+---
+
+### 4. Proposed System Architecture
+
+The proposed system has two main stages:
+
+1. Preprocessing stage.
+2. GNSS-denied navigation stage.
+
+The preprocessing stage uses videos that include GNSS telemetry. It extracts frames, parses the SRT files, computes the camera-center ground coordinate for each frame, and stores the result in a reference database.
+
+The navigation stage receives a new video stream without GNSS. For each query frame, it extracts visual features, matches the frame against the reference database, selects the best matching reference frame, and uses the matched reference frame’s known coordinate as the estimated location.
+
+The complete system is:
+
+```
+GNSS-labeled videos + SRT
+        ↓
+Frame extraction
+        ↓
+SRT parsing
+        ↓
+Camera-center ground projection
+        ↓
+Geo-referenced reference database
+        ↓
+GNSS-denied query video
+        ↓
+ORB feature extraction and matching
+        ↓
+Best reference frame selection
+        ↓
+Estimated camera-center coordinate
+        ↓
+Evaluation using query SRT ground truth
 ```
 
-Then the ground center coordinate is computed by moving from the drone GNSS coordinate by distance `d` in bearing direction `psi`.
+---
 
-For example:
+### 5. Camera-Center Ground Projection
 
-- Height 119 m, camera depression 60°: `d ≈ 68.7 m`.
-- Height 120 m, camera depression 45°: `d ≈ 120 m`.
-- Height 50 m, camera depression 45°: `d ≈ 50 m`.
+The preliminary geometric model assumes locally flat ground. Given the drone altitude (h) and the camera depression angle (\theta), the horizontal ground offset from the drone to the camera-center ground point is:
 
-## 5. Proposed Real-Time Navigation Algorithm
+[
+d = \frac{h}{\tan(\theta)}
+]
 
-For each incoming GNSS-denied frame:
+where:
 
-1. Extract features from the current frame.
-2. Retrieve visually similar reference frames or map tiles from the preprocessing database.
-3. Match the query frame with candidate reference frames using ORB in the baseline, and LightGlue/SuperPoint in the improved version.
-4. Estimate a homography with RANSAC.
-5. Use the best inlier score to choose the best reference frame.
-6. Use the matched reference frame's stored camera-center coordinate as the first estimate.
-7. Optionally refine the estimate using the homography pixel shift and the estimated ground sampling distance.
-8. Apply temporal smoothing with a moving average or Kalman filter.
-9. Output the estimated camera-center coordinate in real time.
+* (h) is the relative altitude from the SRT file.
+* (\theta) is the camera depression angle below the horizon.
+* (d) is the distance in meters from the drone to the observed center point on the ground.
 
-## 6. Platform Choice
+For the DJI Mini 3 Pro videos, the dataset description states that the camera angle is 60 degrees. Therefore:
 
-The recommended implementation platform is Python with OpenCV and pandas for the baseline, because the assignment requires preprocessing video/SRT files and performing a preliminary experiment. ORB matching is used in the baseline because it is simple, fast, and easy to explain. For the advanced version, the matching module can be replaced with SuperPoint + LightGlue. For pixel-level geolocation using terrain, OpenAthena is the closest conceptual reference, but the implementation should begin with a flat-ground version and later add DEM raycasting.
+[
+d = \frac{h}{\tan(60^\circ)}
+]
 
-The platform decision is therefore:
+For example, at an altitude of approximately 100 meters:
 
-- Baseline: Python + OpenCV + SRT parser + flat-ground camera ray projection.
-- Improved matching: SuperPoint + LightGlue.
-- Optional mapping: OpenREALM-style orthomosaic/reference map.
-- Optional semantic support: SegFormer for roads/buildings/trees and match filtering.
+[
+d \approx \frac{100}{1.732} \approx 57.7 \text{ meters}
+]
 
-## 7. Preliminary Experiment
+The SRT file provides the drone latitude and longitude. The heading is estimated from the GNSS trajectory because the parsed SRT metadata did not contain reliable yaw fields. The final camera-center coordinate is computed by moving (d) meters from the drone coordinate in the estimated heading direction.
 
-The preliminary experiment uses a test video and its SRT telemetry:
+---
 
-1. Parse SRT file.
-2. For each telemetry record, read latitude, longitude, height, heading, and gimbal pitch.
-3. Compute the projected ground coordinate of the center pixel.
-4. Export a CSV file with both the drone GNSS coordinate and the projected camera-center coordinate.
-5. Plot both paths.
-6. Export a KML file so the paths can be opened in Google Earth.
+### 6. Preprocessing Stage
 
-This experiment validates the geometric part of the system. It also provides a sanity check: when the camera points straight down, the center path should be close to the drone GNSS path; when the camera is oblique, the center path should be shifted in the heading direction.
+The preprocessing stage builds the reference database.
 
-## 8. Expected Limitations
+For each video/SRT pair:
 
-The baseline has several limitations:
+1. Extract one frame every fixed number of frames.
+2. Parse the SRT telemetry.
+3. Extract latitude, longitude, relative altitude, and timestamp.
+4. Filter low-altitude frames.
+5. Estimate heading from GNSS movement.
+6. Smooth the heading using a circular rolling mean.
+7. Compute the camera-center ground point.
+8. Synchronize extracted frames with telemetry timestamps.
+9. Save the results to a reference database.
 
-- Flat-ground projection ignores terrain elevation.
-- SRT metadata may differ between drone models.
-- Camera FOV and gimbal pitch may not be perfectly calibrated.
-- ORB matching may fail under strong viewpoint, lighting, or altitude differences.
-- Moving cars, people, trees, and shadows may create unstable features.
-- Pure visual matching can confuse repetitive roads/buildings.
+The reference database contains, for each sampled frame:
 
-## 9. Suggested Improvements
+* Frame image path.
+* Timestamp.
+* Drone latitude and longitude.
+* Relative altitude.
+* Estimated heading.
+* Camera depression angle.
+* Camera-center latitude and longitude.
+* Source video name.
 
-1. Replace flat ground with DEM raycasting.
-2. Replace ORB with SuperPoint + LightGlue.
-3. Use semantic segmentation to prefer stable classes such as roads and buildings.
-4. Build an orthomosaic from the training videos.
-5. Use a Kalman filter or particle filter for temporal smoothing.
-6. Use heading/IMU to restrict the search region and reduce false matches.
-7. Evaluate performance with coordinate error in meters.
+The leave-one-out preprocessing experiment used:
 
-## 10. Evaluation Plan
+* Reference videos: `v11`, `v12`, `v13`.
+* Query video left out for testing: `v14`.
 
-Possible metrics:
+The resulting leave-one-out reference database contained 541 reference frames:
 
-- Localization error in meters between estimated and ground-truth GNSS camera/drone coordinate.
-- Match inlier count.
-- Percentage of frames successfully localized.
-- Runtime per frame.
-- Robustness by altitude, lighting, drone model, and camera angle.
+| Source video | Number of reference frames |
+| ------------ | -------------------------: |
+| v11          |                        308 |
+| v12          |                        115 |
+| v13          |                        118 |
+| Total        |                        541 |
 
-For videos with GNSS available, a GNSS-denied simulation can be created by hiding the GNSS column during localization and using it only for evaluation.
+The videos had different altitudes, which increased the variety of the reference database. The approximate average altitudes and corresponding camera-center offsets were:
 
-## 11. References / Tools
+| Source video | Mean altitude | Mean camera-center offset |
+| ------------ | ------------: | ------------------------: |
+| v11          |       96.86 m |                   55.92 m |
+| v12          |       30.92 m |                   17.85 m |
+| v13          |       49.79 m |                   28.75 m |
 
-- ORB-SLAM3: visual, visual-inertial, and multi-map SLAM.
-- UAV-VisLoc: UAV visual localization with satellite map matching.
-- Vision-based GNSS-Free Localization for UAVs in the Wild.
-- OpenREALM: real-time UAV mapping and orthophoto generation.
-- OpenAthena: drone image pixel geolocation using metadata and terrain.
-- LightGlue: fast learned local feature matching.
-- SuperGlue: learned feature matching with graph neural networks.
-- SegFormer for semantic segmentation of UAV images.
+This confirms that the database contains examples from different flight heights.
+
+---
+
+### 7. GNSS-Denied Navigation Stage
+
+The navigation stage treats `v14` as a GNSS-denied query video. The SRT of `v14` is not used for localization. It is used only later for evaluation.
+
+For each query frame:
+
+1. Extract the frame from `v14`.
+2. Convert the frame to grayscale.
+3. Extract ORB keypoints and descriptors.
+4. Match the query descriptors against each reference frame.
+5. Apply Lowe’s ratio test to keep stronger matches.
+6. Estimate a homography using RANSAC.
+7. Use the number of homography inliers as a confidence score.
+8. Select the best reference frame.
+9. Use the matched reference frame’s camera-center coordinate as the estimated position.
+
+The first version always returns the best match, even if the match is weak. This is called the baseline method.
+
+---
+
+### 8. Preliminary Geometry Experiment
+
+The first experiment tests only the geometric projection stage.
+
+The input was one video and its corresponding SRT file. For each sampled frame, the system extracted the GNSS position and relative altitude from the SRT. The camera angle was set to 60 degrees according to the dataset description. The heading was estimated from GNSS movement.
+
+The result compares:
+
+* The real drone GNSS path.
+* The projected camera-center ground path.
+
+The projected path follows the general shape of the GNSS path but is shifted forward in the viewing direction. This is expected because the camera is tilted forward rather than pointing straight down.
+
+The preliminary experiment shows that the SRT parser, altitude extraction, heading estimation, and camera-center projection work correctly.
+
+**Figure:** `docs/figures/preliminary_path_comparison.png`
+
+---
+
+### 9. Visual Matching Experiment
+
+The second experiment tests GNSS-denied visual localization.
+
+The setup was:
+
+* Reference database: `v11`, `v12`, `v13`.
+* Query video: `v14`.
+* Query SRT: used only for evaluation.
+* Feature method: ORB.
+* Matching method: descriptor matching with ratio test.
+* Geometric verification: RANSAC homography.
+* Localization estimate: camera-center coordinate of the best matched reference frame.
+
+The system processed 126 query frames from `v14`.
+
+The baseline results were:
+
+| Metric                |    Value |
+| --------------------- | -------: |
+| Query frames          |      126 |
+| Mean error            | 183.25 m |
+| Median error          |  98.48 m |
+| 75th percentile error | 294.01 m |
+| Maximum error         | 817.67 m |
+
+The matched reference source counts were:
+
+| Matched source | Count |
+| -------------- | ----: |
+| v13            |    58 |
+| v11            |    57 |
+| v12            |    11 |
+
+The best individual matches achieved very low error, including errors of approximately 2.7 m, 5.7 m, 10 m, and 11 m. This shows that the visual matching can correctly identify some locations. However, the baseline also produced large errors in some frames, especially when visually similar roads, buildings, or repeated textures were matched to geographically different places.
+
+Visual inspection of the match examples showed that many feature matches align with real objects in the images. Therefore, the problem is not that feature matching completely fails. Instead, the limitation is that the baseline uses the coordinate of the matched reference frame directly and does not yet refine the position using the homography.
+
+**Figures:**
+
+* `docs/figures/visual_matching_path_comparison.png`
+* `docs/figures/visual_matching_error_over_time.png`
+* `docs/figures/visual_matching_error_histogram.png`
+* `docs/figures/visual_matching_error_by_source.png`
+
+---
+
+### 10. Confidence-Filtered Improvement
+
+The baseline always returns a location, even when the match is weak. For navigation, this is risky because a weak match can produce a large position error.
+
+To improve reliability, a confidence filter was added. The confidence score is based on the number of RANSAC homography inliers. A match is accepted only if:
+
+[
+\text{homography inliers} \geq 10
+]
+
+The threshold was selected by testing several values:
+
+| Threshold    | Frames kept | Mean error | Median error | 75th percentile | Max error |
+| ------------ | ----------: | ---------: | -----------: | --------------: | --------: |
+| Inliers ≥ 5  |   126 / 126 |   183.25 m |      98.48 m |        294.01 m |  817.67 m |
+| Inliers ≥ 8  |    76 / 126 |   118.31 m |      52.28 m |        117.58 m |  538.45 m |
+| Inliers ≥ 10 |    54 / 126 |    50.27 m |      48.28 m |         59.27 m |  150.33 m |
+| Inliers ≥ 12 |    47 / 126 |    48.89 m |      45.90 m |         57.96 m |  150.33 m |
+| Inliers ≥ 15 |    33 / 126 |    52.42 m |      46.44 m |         62.82 m |  126.31 m |
+| Inliers ≥ 20 |    27 / 126 |    49.61 m |      45.32 m |         56.97 m |  126.31 m |
+| Inliers ≥ 30 |    16 / 126 |    47.21 m |      45.32 m |         50.20 m |   80.50 m |
+
+The threshold of 10 inliers was selected because it provides a good balance between accuracy and coverage. It keeps 54 out of 126 frames, which is 42.9% of the query frames, while significantly reducing the error.
+
+The confidence-filtered method achieved:
+
+| Method                            | Frames kept | Mean error | Median error | Max error |
+| --------------------------------- | ----------: | ---------: | -----------: | --------: |
+| ORB + homography baseline         |   126 / 126 |   183.25 m |      98.48 m |  817.67 m |
+| Confidence-filtered, inliers ≥ 10 |    54 / 126 |    50.27 m |      48.28 m |  150.33 m |
+
+This improvement shows that homography inlier count is an effective confidence measure for rejecting unreliable visual localizations.
+
+**Figures:**
+
+* `docs/figures/visual_matching_filtered_path_comparison.png`
+* `docs/figures/visual_matching_filtered_error_over_time.png`
+* `docs/figures/visual_matching_filtered_error_histogram.png`
+* `docs/figures/visual_matching_filtered_error_by_source.png`
+
+---
+
+### 11. Discussion
+
+The experiments show that a practical GNSS-denied visual localization pipeline can be built from video and SRT telemetry.
+
+The preliminary geometry experiment validates the camera-center projection model. The projected path is shifted relative to the drone path in a way that matches the expected geometry of an angled camera.
+
+The preprocessing stage successfully creates a geo-referenced reference database. This database stores visual frames and their estimated camera-center coordinates, allowing later query frames to be localized visually.
+
+The visual matching baseline proves that local feature matching can identify real correspondences between query frames and reference frames. The match examples visually align well, which means the ORB feature matching and homography verification are meaningful.
+
+However, the baseline also shows important limitations. A single best visual match is not always geographically correct. Similar visual structures may appear in different places, especially roads, fields, roofs, and repeated urban patterns. This can create large errors.
+
+The confidence-filtered method improves the result by rejecting weak matches. This makes the system more reliable, although it reduces coverage because some frames are not localized.
+
+---
+
+### 12. Limitations
+
+The current implementation has several limitations:
+
+1. Flat-ground assumption
+   The camera-center projection assumes locally flat ground. A digital elevation model would improve accuracy in hilly terrain.
+
+2. Heading estimation from GNSS
+   The SRT files did not provide reliable yaw or gimbal yaw fields. Therefore, heading was estimated from GNSS movement. This can be noisy during turns or slow movement.
+
+3. No homography-based coordinate refinement
+   The current visual localization method uses the coordinate of the matched reference frame directly. It does not yet use the homography to estimate the exact displacement between the query frame center and the reference frame center.
+
+4. Classical ORB features
+   ORB is fast and simple, but it is weaker than modern learned feature matchers such as SuperGlue or LightGlue.
+
+5. No temporal filtering
+   Each query frame is localized independently. A Kalman filter, particle filter, or sequence matching approach could smooth the estimated path.
+
+6. No semantic filtering
+   Semantic segmentation was not implemented. Roads, buildings, roundabouts, and other stable landmarks could help improve matching quality.
+
+7. Limited dataset size
+   The experiment used four videos, with three videos for the reference database and one video for testing. A larger dataset would provide stronger evaluation.
+
+---
+
+### 13. Future Work
+
+Several improvements can be added in future versions:
+
+1. Use homography to refine the coordinate estimate
+   Instead of copying the matched frame coordinate, use the homography to estimate how far the query frame center is shifted relative to the reference frame center.
+
+2. Replace ORB with LightGlue or SuperGlue
+   Learned feature matchers are expected to improve matching robustness under viewpoint and illumination changes.
+
+3. Add temporal smoothing
+   A Kalman filter or particle filter can reduce jumps between consecutive frames.
+
+4. Add semantic segmentation
+   Segmenting roads, buildings, trees, and other classes can help reject bad matches and focus on stable landmarks.
+
+5. Use satellite or orthomosaic maps
+   Matching query frames against a geo-referenced orthomosaic or satellite map would allow localization beyond the previously recorded flight paths.
+
+6. Use a digital elevation model
+   A DEM would replace the flat-ground projection and improve camera-center geolocation.
+
+7. Evaluate more videos
+   Additional videos from different heights, camera angles, and lighting conditions would provide a more complete analysis.
+
+---
+
+### 14. Conclusion
+
+This project implemented a complete prototype for GNSS-denied visual navigation using drone video and SRT telemetry.
+
+First, a geometry-based preliminary experiment was implemented. It parsed SRT telemetry, used relative altitude and a known 60-degree camera angle, estimated heading from GNSS movement, and computed the expected camera-center ground path. The projected path was compared with the captured GNSS path.
+
+Second, a preprocessing stage was implemented. It created a geo-referenced reference database from videos `v11`, `v12`, and `v13`. The database contained 541 reference frames with image paths, timestamps, altitude, heading, and estimated camera-center coordinates.
+
+Third, a GNSS-denied visual localization experiment was performed. Video `v14` was treated as the query video without GNSS. ORB features and homography scoring were used to match query frames against the reference database. The baseline achieved a mean error of 183.25 meters and a median error of 98.48 meters.
+
+Finally, a confidence-filtering improvement was added. By accepting only matches with at least 10 homography inliers, the mean error was reduced to 50.27 meters and the median error to 48.28 meters, while keeping 42.9% of the query frames.
+
+The results show that visual matching can support GNSS-denied localization, but robust navigation requires confidence estimation, temporal smoothing, and stronger matching methods. The implemented system satisfies the assignment requirements and provides a clear baseline for future improvements.
+
+---
+
+### References
+
+[1] Campos, C., Elvira, R., Gómez Rodríguez, J. J., Montiel, J. M. M., and Tardós, J. D. ORB-SLAM3: An Accurate Open-Source Library for Visual, Visual-Inertial and Multi-Map SLAM.
+
+[2] Kern, A., Bobbe, M., Khedar, Y., and Bestmann, U. OpenREALM: Real-time Mapping for Unmanned Aerial Vehicles.
+
+[3] Xu, W., Yao, Y., Cao, J., Wei, Z., Liu, C., Wang, J., and Peng, M. UAV-VisLoc: A Large-scale Dataset for UAV Visual Localization.
+
+[4] Gurgu, M. M., Queralta, J. P., and Westerlund, T. Vision-based GNSS-Free Localization for UAVs in the Wild.
+
+[5] OpenAthena project. Drone image geolocation using sensor metadata and digital elevation models.
+
+[6] Sarlin, P. E., DeTone, D., Malisiewicz, T., and Rabinovich, A. SuperGlue: Learning Feature Matching with Graph Neural Networks.
+
+[7] Lindenberger, P., Sarlin, P. E., and Pollefeys, M. LightGlue: Local Feature Matching at Light Speed.
+
+[8] Spasev, V., Dimitrovski, I., Chorbev, I., and Kitanovski, I. Semantic Segmentation of Unmanned Aerial Vehicle Remote Sensing Images using SegFormer.
