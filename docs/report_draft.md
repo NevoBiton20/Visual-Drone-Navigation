@@ -381,6 +381,454 @@ The current implementation has several limitations:
 
 ---
 
+### Final Project Extension: Real-Time Visual Navigation Using Previous Videos and GIS Data
+
+The final project extends Ex1 from an offline visual localization prototype into a real-time GNSS-denied navigation algorithm. The extended system is based on two complementary sources of geographic information:
+
+1. Predefined annotated previous drone videos.
+2. GIS datasets such as satellite imagery, orthophotos, elevation data, road maps, and building layers.
+
+The previous-video database provides viewpoint-specific visual information from the drone’s actual flight environment. The GIS database provides a wider geographic reference that is not limited to previously flown paths. Combining these two sources allows the drone to localize itself in real time even when GNSS is unavailable.
+
+#### System Overview
+
+The proposed real-time system contains two main stages:
+
+1. Offline preprocessing stage.
+2. Online real-time navigation stage.
+
+The offline stage builds a unified visual-geographic reference database. The online stage receives live drone video and telemetry, matches the current frame against the reference database and GIS map, estimates the camera-center ground coordinate, and updates the navigation state over time.
+
+The high-level architecture is:
+
+```text
+Offline preprocessing
+---------------------
+Previous drone videos + SRT telemetry
+        ↓
+Geo-referenced video frame database
+
+GIS datasets
+satellite imagery / orthophoto / DEM / roads / buildings
+        ↓
+Geo-referenced map tile database
+
+Video database + GIS database
+        ↓
+Unified visual-geographic reference database
+
+
+Online real-time navigation
+---------------------------
+Live drone frame + altitude + camera angle + IMU/yaw if available
+        ↓
+Feature extraction and optional semantic segmentation
+        ↓
+Candidate retrieval from previous-video database and GIS map tiles
+        ↓
+Feature matching and geometric verification
+        ↓
+Camera-center coordinate estimation
+        ↓
+Temporal filtering and confidence estimation
+        ↓
+Real-time position estimate
+```
+
+#### Offline Preprocessing Stage
+
+The offline preprocessing stage prepares the data before the drone performs GNSS-denied navigation.
+
+##### 1. Previous Video Preprocessing
+
+The system receives previously recorded drone videos with SRT telemetry. These videos are treated as annotated reference flights because the SRT files contain GNSS coordinates and altitude.
+
+For each video:
+
+1. Extract sampled frames.
+2. Parse the SRT telemetry.
+3. Extract GNSS latitude, longitude, relative altitude, and timestamps.
+4. Estimate heading from GNSS movement if yaw is unavailable.
+5. Use the camera angle and altitude to compute the camera-center ground coordinate.
+6. Extract visual descriptors from every frame.
+7. Optionally extract semantic labels such as roads, buildings, trees, roundabouts, and pedestrian crossings.
+8. Store the result in the reference database.
+
+Each stored reference item contains:
+
+```text
+frame image
+timestamp
+source video name
+drone latitude and longitude
+altitude
+estimated heading
+camera depression angle
+camera-center latitude and longitude
+visual descriptors
+semantic labels, if available
+confidence metadata
+```
+
+This part is already implemented in the Ex1 prototype using videos v11, v12, and v13.
+
+##### 2. GIS Dataset Preprocessing
+
+In addition to previous drone videos, the system uses GIS data. The GIS data may include:
+
+* Satellite imagery or orthophoto tiles.
+* Digital elevation model, DEM.
+* Road network.
+* Building footprints.
+* Land-use or vegetation layers.
+* Manually annotated landmarks.
+
+The map area is divided into small geo-referenced tiles. Each tile has known geographic bounds. For every tile, the system stores:
+
+```text
+tile image
+tile geographic bounds
+tile center latitude and longitude
+scale / ground sampling distance
+visual descriptors
+semantic/vector annotations
+elevation data, if available
+```
+
+The GIS database complements the previous-video database. If the live drone image does not match a previous flight frame, it may still match a satellite or orthophoto tile.
+
+##### 3. Unified Reference Database
+
+The final offline product is a unified database containing two types of reference items:
+
+1. Drone-frame references from previous videos.
+2. GIS/map-tile references from satellite or orthophoto data.
+
+Each database entry is indexed by both visual descriptors and geographic metadata. This allows the online system to quickly retrieve candidate locations.
+
+A possible database schema is:
+
+```text
+reference_id
+reference_type: video_frame / gis_tile
+image_path
+source_name
+timestamp, if video frame
+latitude
+longitude
+geo_bounds, if map tile
+altitude, if video frame
+heading, if available
+camera_angle, if available
+semantic_labels
+descriptor_path
+quality_score
+```
+
+#### Online Real-Time Navigation Stage
+
+The online stage runs during flight. The drone receives a live video stream and telemetry, but no GNSS coordinates.
+
+For every incoming frame:
+
+1. Read the current video frame.
+2. Read available telemetry such as altitude, camera angle, IMU yaw, and barometer height.
+3. Extract visual features from the frame.
+4. Optionally perform semantic segmentation.
+5. Retrieve candidate locations from the previous-video database.
+6. Retrieve candidate locations from the GIS map-tile database.
+7. Match the query frame to candidate references.
+8. Use geometric verification to reject weak matches.
+9. Estimate the camera-center ground coordinate.
+10. Fuse the estimate with previous estimates using a temporal filter.
+11. Output the estimated location and confidence score.
+
+#### Candidate Retrieval
+
+A real-time system cannot compare every live frame against every stored reference image. Therefore, candidate retrieval is used.
+
+The system first performs a fast coarse search. Possible retrieval methods include:
+
+* Global image descriptors.
+* Bag-of-visual-words.
+* CNN or Vision Transformer embeddings.
+* GPS-prior window if approximate initial position is available.
+* Motion-prior window from the previous estimated position.
+
+The output of this step is a small set of candidate reference images or map tiles.
+
+For example:
+
+```text
+Live frame
+        ↓
+global descriptor search
+        ↓
+top 20 candidate video frames
+top 20 candidate GIS tiles
+```
+
+Only these candidates are used in the more expensive feature matching stage.
+
+#### Feature Matching and Geometric Verification
+
+After candidate retrieval, the system performs local feature matching. The baseline implementation uses ORB features because they are fast and available in OpenCV. A stronger real-time version can replace ORB with learned matchers such as SuperPoint with LightGlue.
+
+For each candidate:
+
+1. Match descriptors between the query frame and candidate image.
+2. Apply Lowe’s ratio test or mutual matching.
+3. Estimate homography using RANSAC.
+4. Count the number of homography inliers.
+5. Compute a confidence score.
+
+The selected match is the candidate with the strongest geometrically verified score.
+
+A simple confidence score is:
+
+```text
+score = 10 · homography_inliers + number_of_good_matches
+```
+
+The system rejects matches when the confidence score is too low.
+
+#### Coordinate Estimation
+
+There are two possible cases.
+
+##### Case 1: Match to Previous Drone Video Frame
+
+If the query frame matches a previous drone frame, the baseline estimate is the camera-center coordinate of the matched reference frame.
+
+A better version uses the homography between the query frame and the reference frame. The homography can estimate the displacement between the query image center and the matched reference image center. This pixel displacement can be converted to meters using altitude, camera angle, and camera field of view.
+
+The improved estimate is:
+
+```text
+reference camera-center coordinate
+        +
+homography-based local displacement
+        =
+query camera-center coordinate
+```
+
+##### Case 2: Match to GIS / Satellite Tile
+
+If the query frame matches a geo-referenced GIS tile, the coordinate can be estimated directly from the tile geometry.
+
+Since the GIS tile has known geographic bounds, the matched query center can be mapped into the tile coordinate system using the estimated homography. The tile pixel coordinate is then converted to latitude and longitude.
+
+The estimate is:
+
+```text
+query image center
+        ↓
+homography to GIS tile
+        ↓
+pixel coordinate inside geo-referenced tile
+        ↓
+latitude and longitude
+```
+
+This is one of the main advantages of using GIS data: the map tile already has global coordinates.
+
+#### Temporal Filtering
+
+Frame-by-frame visual localization can be noisy. Therefore, the real-time system should not use each frame independently. Instead, it should maintain a navigation state over time.
+
+The state may include:
+
+```text
+latitude
+longitude
+velocity north/east
+heading
+confidence
+```
+
+A Kalman filter or particle filter can combine:
+
+* Previous estimated position.
+* Current visual localization estimate.
+* IMU/yaw measurements.
+* Barometric altitude.
+* Expected drone motion limits.
+* Match confidence.
+
+If the current match has high confidence, it strongly updates the state. If the match has low confidence, it is rejected or given low weight.
+
+#### Confidence and Failure Handling
+
+The system must detect when visual localization is unreliable. Confidence can be based on:
+
+* Number of homography inliers.
+* Ratio between the best and second-best candidate scores.
+* Spatial consistency with the previous position.
+* Agreement between previous-video match and GIS-tile match.
+* Semantic consistency, for example roads matching roads and buildings matching buildings.
+* Temporal smoothness.
+
+If confidence is low, the system should not output a false precise location. Instead, it should output:
+
+```text
+position estimate: unavailable or low confidence
+last reliable position
+estimated drift region
+```
+
+This is important for safety because an incorrect high-confidence estimate is more dangerous than no estimate.
+
+#### Semantic Annotations
+
+Annotated previous videos and GIS layers can improve matching.
+
+For example, the system can use semantic classes such as:
+
+* road
+* building
+* tree
+* roundabout
+* parking lot
+* pedestrian crossing
+* antenna
+* field
+
+Semantic information can be used in three ways:
+
+1. Candidate filtering
+   If the query frame contains a road intersection, prefer map tiles or previous frames that also contain a road intersection.
+
+2. Match validation
+   Reject matches where semantic regions do not align, for example road matched to trees.
+
+3. Landmark-based localization
+   Stable landmarks such as road intersections, roundabouts, and large buildings can be used as high-confidence anchors.
+
+This is especially useful in areas with repetitive low-level textures, where local feature matching alone may produce false matches.
+
+#### Real-Time Constraints
+
+A real-time navigation algorithm must control runtime. The following design choices support real-time performance:
+
+1. Process one keyframe every fixed interval instead of every video frame.
+2. Use global descriptors for fast candidate retrieval.
+3. Use local feature matching only on a small top-k candidate set.
+4. Cache descriptors for all reference frames and GIS tiles.
+5. Use confidence filtering to avoid unnecessary refinement on weak candidates.
+6. Use temporal filtering to interpolate between visual updates.
+7. Run expensive models, such as segmentation or learned matching, only on keyframes.
+
+The real-time loop can therefore run as:
+
+```text
+For each new frame:
+    if frame is not a keyframe:
+        propagate position using motion model
+    else:
+        retrieve candidates
+        match candidates
+        verify geometry
+        estimate position
+        update temporal filter
+```
+
+#### Relation to the Implemented Ex1 Prototype
+
+The implemented Ex1 system already provides the previous-video localization branch of the final algorithm.
+
+Implemented components:
+
+```text
+SRT parsing
+camera-center projection
+reference database from v11-v13
+v14 GNSS-denied query simulation
+ORB visual matching
+homography verification
+confidence filtering
+evaluation against SRT ground truth
+```
+
+The final project extension adds the GIS branch:
+
+```text
+GIS/satellite/orthophoto map tiles
+geo-referenced tile database
+map-tile matching
+coordinate estimation from tile geometry
+semantic/vector GIS validation
+```
+
+Therefore, the final project is a natural extension of Ex1. The current implementation demonstrates the core mechanism using previous annotated videos, and the proposed GIS extension turns it into a more general real-time navigation design.
+
+#### Proposed Real-Time Algorithm
+
+```text
+Algorithm: Real-Time Visual Navigation with Previous Videos and GIS
+
+Offline:
+1. For each annotated drone video:
+       extract frames
+       parse SRT telemetry
+       compute camera-center coordinates
+       extract visual descriptors
+       store in video reference database
+
+2. For each GIS map tile:
+       load geo-referenced satellite/orthophoto tile
+       extract visual descriptors
+       load vector annotations if available
+       store in GIS reference database
+
+3. Build search index over all descriptors.
+
+Online:
+1. Initialize navigation state.
+
+2. For each incoming video frame:
+       read altitude, camera angle, IMU/yaw if available
+       extract global descriptor
+       retrieve top-k video candidates and top-k GIS candidates
+       extract local features
+       match local features to candidates
+       estimate homography with RANSAC
+       reject weak matches
+       estimate camera-center coordinate
+       fuse estimate with temporal filter
+       output coordinate and confidence
+
+3. If no reliable match is found:
+       propagate state using motion model
+       lower confidence
+       wait for next keyframe
+```
+
+#### Expected Advantages
+
+The combined previous-video and GIS approach has several advantages:
+
+1. Previous drone videos provide viewpoint-specific information close to the real camera perspective.
+2. GIS data provides geographic coverage beyond previously flown trajectories.
+3. Semantic GIS layers help reject visually similar but geographically wrong matches.
+4. Confidence filtering improves reliability.
+5. Temporal filtering supports continuous navigation between visual updates.
+
+#### Expected Limitations
+
+The final system also has limitations:
+
+1. Satellite imagery may differ from drone imagery due to viewpoint, resolution, shadows, season, and time of capture.
+2. GIS data may be outdated.
+3. Repetitive urban or agricultural patterns may cause false matches.
+4. Real-time learned matching may require GPU acceleration.
+5. Flat-ground projection may fail in terrain with strong elevation changes.
+6. A high-quality DEM is needed for accurate ray-ground intersection.
+7. The system must handle low-confidence frames safely.
+
+Despite these limitations, the proposed design provides a realistic architecture for GNSS-denied visual navigation based on previous annotated drone videos and GIS datasets.
+
+---
+
 ### 13. Future Work
 
 Several improvements can be added in future versions:
