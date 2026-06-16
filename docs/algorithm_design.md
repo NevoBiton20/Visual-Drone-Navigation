@@ -55,19 +55,3 @@ for each query frame:
     smoothed_center = temporal_filter(estimated_center)
     output smoothed_center
 ```
-
-## Preliminary Experiment
-
-Input: test video with SRT.
-
-Output: path plot and KML.
-
-Pseudocode:
-
-```text
-telemetry = parse_srt(test_srt)
-for each telemetry record:
-    compute camera-center ground coordinate
-plot drone GNSS path and camera-center path
-export CSV + KML
-```
