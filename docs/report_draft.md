@@ -1,4 +1,4 @@
-# Ex1 - Visual Navigation for Drones
+# Visual Navigation for Drones
 
 ## GNSS-Denied Optical Navigation Using Drone Video and SRT Telemetry
 
