@@ -1,0 +1,5 @@
+name,image_path,north,south,west,east
+ge_tile_NW,data/gis/tiles_split/ge_tile_NW.png,32.107758,32.10504,35.200894,35.207825
+ge_tile_NE,data/gis/tiles_split/ge_tile_NE.png,32.107758,32.10504,35.207825,35.214756
+ge_tile_SW,data/gis/tiles_split/ge_tile_SW.png,32.10504,32.102322,35.200894,35.207825
+ge_tile_SE,data/gis/tiles_split/ge_tile_SE.png,32.10504,32.102322,35.207825,35.214756
